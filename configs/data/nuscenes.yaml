@@ -5,7 +5,8 @@ defaults:
 _target_: pointbev.data.datamodule.NuScenesDatamodule
 
 # Nuscenes
-version: trainval
+#version: trainval
+version: mini
 dataroot: ${paths.data_dir}/nuScenes
 hdmaproot: ${paths.data_dir}/nuscenes_processed_map
 is_lyft: False

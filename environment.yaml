@@ -10,6 +10,7 @@ dependencies:
   - python
   # DL
   - cudatoolkit>=10.1
+  - cudatoolkit-dev>=10.1
   - libcufile=1.4.0.31
   - pytorch<2.1.0
   - torchvision>=0.15.0
@@ -24,6 +25,7 @@ dependencies:
   - plotly
   - pip
   - pip:
+    - tartanair
     # Datasets
     - nuscenes-devkit==1.1.0
     - lyft_dataset_sdk

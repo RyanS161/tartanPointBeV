@@ -2,7 +2,8 @@
 
 defaults:
   - _self_
-  - data: nuscenes.yaml
+  # - data: nuscenes.yaml
+  - data: tartanground.yaml
   - model: PointBeV.yaml
   - callbacks: default_pl.yaml
   - plugins: null
