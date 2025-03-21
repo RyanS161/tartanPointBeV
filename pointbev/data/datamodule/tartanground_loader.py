@@ -33,11 +33,11 @@ class TartangroundDatamodule(pl.LightningDataModule):
         train_drop_last=True,
         train_shuffle=False,
         val_shuffle=False,
-    ):
+        **kwargs):
         super().__init__()
 
         # Nuscenes
-        self.envs = envs
+        self.envs = list(envs)
         self.dataroot = dataroot
         # Grid
         self.grid = grid
@@ -61,8 +61,9 @@ class TartangroundDatamodule(pl.LightningDataModule):
         data = TartanAirDataset(self.dataroot)
         data.create_image_dataset(self.envs,
                                   modality=['image'],
-                                  camera_name=self.img_params.cams)
-        self.train_data, self.val_data = random_split(data.dataset, [int(0.8*len(data.dataset)), int(0.2*len(data.dataset))])
+                                  camera_name=list(self.img_params.cams))
+        train_len = int(0.8*len(data.dataset))
+        self.train_data, self.val_data = random_split(data.dataset, [train_len, len(data.dataset)-train_len])
         
 
     def train_dataloader(self):
@@ -88,17 +89,17 @@ class TartangroundDatamodule(pl.LightningDataModule):
             prefetch_factor=self.prefetch_factor
         )
 
-    # def test_dataloader(self):
-    #     return torch.utils.data.DataLoader(
-    #         self.valdata,
-    #         batch_size=self.valid_batch_size,
-    #         shuffle=False,
-    #         drop_last=False,
-    #         num_workers=self.num_workers,
-    #         pin_memory=self.pin_memory,
-    #         prefetch_factor=self.prefetch_factor,
-    #         collate_fn=self.collate_fn,
-    #     )
+    def test_dataloader(self):
+        return torch.utils.data.DataLoader(
+            self.valdata, #TODO fix later
+            batch_size=self.valid_batch_size,
+            shuffle=False,
+            drop_last=False,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            collate_fn=self.collate_fn,
+        )
 
     # def on_after_batch_transfer(self, batch, dataloader_idx):
     #     for key in ["binimg", "binimg_aug"]:

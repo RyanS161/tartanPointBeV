@@ -2,14 +2,14 @@ defaults:
   - _self_ 
   - augs@img_params: scale_0_3.yaml
 
-_target_: pointbev.data.datamodule.TartanGroundDataModule
+_target_: pointbev.data.datamodule.TartangroundDatamodule
 
 # Nuscenes
 envs: 
  - 'Downtown'
-dataroot: ${paths.data_dir}/tartanground
-# hdmaproot: ${paths.data_dir}/nuscenes_processed_map
-# is_lyft: False
+dataroot: ${paths.data_dir}tartanground
+hdmaproot: ${paths.data_dir}/nuscenes_processed_map
+is_lyft: False
 
 # Grid
 grid:
@@ -38,9 +38,9 @@ img_params:
   downsample: ${model.net.backbone.downsample}
 
 # Coefficients
-# coeffs:
-#   bev_aug:
-#     trans_rot: [30.,20.,0.,20.,0.,0.]
+coeffs:
+  bev_aug:
+    trans_rot: [30.,20.,0.,20.,0.,0.]
 
 # Dataloader
 batch_size: 1
@@ -52,27 +52,27 @@ train_drop_last: True
 train_shuffle: True
 
 # Inputs.
-# normalize_img: True 
-# keep_input_binimg: True
-# keep_input_centr_offs: True
-# keep_input_detection: False
-# keep_input_hdmap: False
-# hdmap_names: ['drivable_area']
-# keep_input_persp: False
-# keep_input_sampling: False
-# keep_input_offsets_map: False
-# keep_input_lidar: False
-# save_folder: ""
-# visualise_mode: False
+normalize_img: True 
+keep_input_binimg: True
+keep_input_centr_offs: True
+keep_input_detection: False
+keep_input_hdmap: False
+hdmap_names: ['drivable_area']
+keep_input_persp: False
+keep_input_sampling: False
+keep_input_offsets_map: False
+keep_input_lidar: False
+save_folder: ""
+visualise_mode: False
 
 # Multi-scale
-# kernel_scales: [1]
+kernel_scales: [1]
 
 # Temporal
-# cam_T_P: [[0,0]]
-# bev_T_P: [[0,0]]
-# mode_ref_cam_T: 'present'
+cam_T_P: [[0,0]]
+bev_T_P: [[0,0]]
+mode_ref_cam_T: 'present'
 
 # Filters
-# only_object_center_in: false
-# filters_cat: ['vehicle']
+only_object_center_in: false
+filters_cat: ['vehicle']
