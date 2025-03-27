@@ -4,13 +4,31 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import pickle
+from scipy.spatial.transform import Rotation
 
 VISUALIZE = True
 VISUALIZE_VOXEL_SIZE = 0.5
-GRID_RESOLUTION = 1.0
+GRID_RESOLUTION = 0.5
+GRID_SIZE = 50  # 25 meters -> 50 meters by 50 meters grid
+GRID_SIZE_PIXELS = int(GRID_SIZE / GRID_RESOLUTION)
+MAX_Z_VALUE = 15.0  # 15 meters, we probably don't care about anything higher
+MIN_ELEV_TUNING_FACTOR = 2
+DESIRED_CEILING_GAP = 2.0
 
 SEG_RGBS_PATH = "/Users/ryanslocum/Documents/current_courses/PLR/repos/misc/files_from_manthan/seg_rgbs.txt"
 
+
+def pose_to_SE(pose):
+    T = np.eye(4)
+    T[:3, 3] = pose[:3]
+    T[:3, :3] = Rotation.from_quat(pose[3:]).as_matrix()
+    return T
+
+def save_elevation_data(elevation_data, file_path):
+    np.save(file_path, elevation_data)
+
+def save_semantic_plot(elevation_data, file_path):
+    plt.imsave(file_path, elevation_data)
 
 def load_rgb_mapping(file_path):
     """Load segmentation ID to RGB mapping from a file."""
@@ -45,7 +63,7 @@ class GroundTruthMapGenerator:
         self.grid_resolution = grid_resolution
         self.load_data()
         # self.visualize_point_cloud(vis_voxel_size=VISUALIZE_VOXEL_SIZE)
-        self.clean_data()
+        # self.clean_data()
         # self.visualize_point_cloud(vis_voxel_size=VISUALIZE_VOXEL_SIZE)
 
     def load_data(self):
@@ -57,8 +75,8 @@ class GroundTruthMapGenerator:
             and self.point_cloud.has_colors()
         )
 
-    def clean_data(self):
-        print("Cleaning point cloud data")
+    def transform_and_clean_point_cloud(self, transformation):
+        # print("Cleaning point cloud data")
 
         # self.point_cloud = self.point_cloud.remove_duplicated_points()
         # self.point_cloud = self.point_cloud.remove_non_finite_points()
@@ -67,168 +85,100 @@ class GroundTruthMapGenerator:
         # )
 
         # Crop point cloud to specified bounds
-        # bbox = o3d.geometry.AxisAlignedBoundingBox(
-        #     min_bound=[-100, -100, -100], max_bound=[100, 100, 100]
-        # )
-        # self.point_cloud = self.point_cloud.crop(bbox)
-
+        # Copy point cloud to new_pc
+        new_pc = o3d.geometry.PointCloud(self.point_cloud)
+        # Apply transformation
+        new_pc.transform(transformation)
+        # Crop point cloud to specified bounds
+        BBOX_SIZE = np.ceil(GRID_SIZE/2)
+        bbox = o3d.geometry.AxisAlignedBoundingBox(
+            min_bound=[-BBOX_SIZE, -BBOX_SIZE, -MAX_Z_VALUE],
+            max_bound=[BBOX_SIZE, BBOX_SIZE, MAX_Z_VALUE],
+        )
+        new_pc = new_pc.crop(bbox)
+        min_bound = new_pc.get_min_bound()
         # Remove points with elevation < 0
-        points = np.asarray(self.point_cloud.points)
-        colors = np.asarray(self.point_cloud.colors)
+        points = np.asarray(new_pc.points)
+        colors = np.asarray(new_pc.colors)
         # inverting height to be z-up because it really fucks with my head otherwise
         points[:, 2] *= -1.0
         # remove invalid seg colors
         # clean points
-        self.point_cloud.points = o3d.utility.Vector3dVector(points)
-        self.point_cloud.colors = o3d.utility.Vector3dVector(colors)
+        return points, colors, min_bound
 
-    def visualize_point_cloud(self, vis_voxel_size):
-        vis_pc = self.point_cloud.voxel_down_sample(voxel_size=vis_voxel_size)
+    def visualize_point_cloud(self, point_cloud, vis_voxel_size):
+        vis_pc = point_cloud.voxel_down_sample(voxel_size=vis_voxel_size)
         o3d.visualization.draw_geometries([vis_pc])
 
     def create_maps(self):
-        # PC_DOWNSAMPLE_RATE = 2
-        MIN_ELEV_TUNING_FACTOR = 10
-        DESIRED_CEILING_GAP = (
-            2.0  # https://www.anybotics.com/anymal-technical-specifications.pdf
-        )
         print("Creating 2.5D maps")
         # downsampled_pc = self.point_cloud.voxel_down_sample(
         #     voxel_size=(self.grid_resolution / 2)
         # )
-        downsampled_pc = self.point_cloud
-        points = np.asarray(downsampled_pc.points)
-        colors = np.asarray(downsampled_pc.colors)
-        # classes = np.array([float_color_to_seg_color(color) for color in colors])
-        min_bounds = downsampled_pc.get_min_bound()
-        grid_coords = np.floor(
-            (points[:, :2] - min_bounds[:2]) / self.grid_resolution
-        ).astype(int)
-        unique_grid_coords, inv_indices = np.unique(
-            grid_coords, axis=0, return_inverse=True
+        pose_file = os.path.join(self.parent_dir, "pose_lcam_front.txt")
+        poses = np.loadtxt(pose_file)
+
+        self.point_cloud = self.point_cloud.voxel_down_sample(
+            voxel_size=self.grid_resolution/2
         )
-        min_ground_layer_elev, max_ground_layer_elev, ceiling_layer_elev= [], [], []
-        min_ground_layer_sem, max_ground_layer_sem, ceiling_layer_sem = [], [], []
-        # semantic_points = []
-        for i in tqdm(range(len(unique_grid_coords))):
-            pillar_points = points[inv_indices == i]
-            pillar_colors = colors[inv_indices == i]
-            grid_x = unique_grid_coords[i, 0] * self.grid_resolution + min_bounds[0]
-            grid_y = unique_grid_coords[i, 1] * self.grid_resolution + min_bounds[1]
 
-            sorted_z_values = np.sort(pillar_points[:, 2])
-            sorted_colors = pillar_colors[np.argsort(pillar_points[:, 2])]
-            if len(sorted_z_values) > MIN_ELEV_TUNING_FACTOR:
-                # Min ground heuristic
-                min_ground_elevation = np.mean(sorted_z_values[:MIN_ELEV_TUNING_FACTOR])
-                min_ground_sem = sorted_colors[0]
-                # Max ground and ceiling heuristics
-                non_min_points = sorted_z_values[MIN_ELEV_TUNING_FACTOR:]
-                non_min_colors = sorted_colors[MIN_ELEV_TUNING_FACTOR:]
-                gaps = np.diff(non_min_points)
-                gap_index = np.where(gaps > DESIRED_CEILING_GAP)[0]
-                if gap_index.size > 0:
-                    first_gap_index = gap_index[0]
-                    max_ground_elevation = non_min_points[first_gap_index]
-                    max_ground_sem = non_min_colors[first_gap_index]
-                    ceiling_elevation = non_min_points[first_gap_index + 1]
-                    ceiling_sem = non_min_colors[first_gap_index + 1]
-                else:
-                    max_ground_elevation = non_min_points[-1]
-                    max_ground_sem = non_min_colors[-1]
-                    ceiling_elevation = np.nan
-                    ceiling_sem = (np.nan,)*3
+        for frame_idx, pose in tqdm(enumerate(poses)):
+            current_pose = pose_to_SE(pose)
+            transformation = np.linalg.inv(current_pose)
+            points, colors, min_bounds = self.transform_and_clean_point_cloud(transformation)
+            # classes = np.array([float_color_to_seg_color(color) for color in colors])
+            grid_coords = np.floor(
+                (points[:, :2] - min_bounds[:2]) / self.grid_resolution
+            ).astype(int)
+            unique_grid_coords, inv_indices = np.unique(
+                grid_coords, axis=0, return_inverse=True
+            )
+            elevation_layers = np.full((GRID_SIZE_PIXELS, GRID_SIZE_PIXELS, 3), np.nan)
+            semantic_layers = np.full((GRID_SIZE_PIXELS, GRID_SIZE_PIXELS, 3, 3), np.nan)
+            # semantic_points = []
 
-            else:
-                min_ground_elevation, max_ground_elevation, ceiling_elevation = np.nan, np.nan, np.nan
-                min_ground_sem, max_ground_sem, ceiling_sem = (np.nan,)*3, (np.nan,)*3, (np.nan,)*3
+            for i in range(len(unique_grid_coords)):
+                x, y = unique_grid_coords[i]
+                pillar_points = points[inv_indices == i]
+                if len(pillar_points) > MIN_ELEV_TUNING_FACTOR:
+                    pillar_colors = colors[inv_indices == i]
+                    sorted_indices = np.argsort(pillar_points[:, 2])
+                    sorted_z_values = pillar_points[sorted_indices, 2]
+                    sorted_colors = pillar_colors[sorted_indices]
+                    # Min ground heuristic
+                    elevation_layers[x,y,0] = np.mean(
+                        sorted_z_values[:MIN_ELEV_TUNING_FACTOR]
+                    )
+                    semantic_layers[x,y,0] = sorted_colors[0]
+                    # Max ground and ceiling heuristics
+                    non_min_points = sorted_z_values[MIN_ELEV_TUNING_FACTOR:]
+                    non_min_colors = sorted_colors[MIN_ELEV_TUNING_FACTOR:]
+                    gaps = np.diff(non_min_points)
+                    gap_index = np.where(gaps > DESIRED_CEILING_GAP)[0]
+                    if gap_index.size > 0:
+                        first_gap_index = gap_index[0]
+                        elevation_layers[x,y,1] = non_min_points[first_gap_index] # Max ground
+                        semantic_layers[x,y,1] = non_min_colors[first_gap_index]
+                        elevation_layers[x,y,2] = non_min_points[first_gap_index + 1]
+                        semantic_layers[x,y,2] = non_min_colors[first_gap_index + 1]
+                    else:
+                        elevation_layers[x,y,1] = non_min_points[-1]
+                        semantic_layers[x,y,1] = non_min_colors[-1]
 
-            min_ground_layer_elev.append([grid_x, grid_y, min_ground_elevation])
-            max_ground_layer_elev.append([grid_x, grid_y, max_ground_elevation])
-            ceiling_layer_elev.append([grid_x, grid_y, ceiling_elevation])
+            if VISUALIZE:
+                # Plot each elevation map
+                save_elevation_data(elevation_layers[:, :, 0], f"./output/elev/min_ground/{frame_idx:06d}.npy")
+                save_elevation_data(elevation_layers[:, :, 1], f"./output/elev/max_ground/{frame_idx:06d}.npy")
+                save_elevation_data(elevation_layers[:, :, 2], f"./output/elev/ceiling/{frame_idx:06d}.npy")
 
-            min_ground_layer_sem.append([grid_x, grid_y, *min_ground_sem])
-            max_ground_layer_sem.append([grid_x, grid_y, *max_ground_sem])
-            ceiling_layer_sem.append([grid_x, grid_y, *ceiling_sem])
-            # pillar_classes = classes[inv_indices == i]
-            # semantic_points.append(
-            #     [grid_x, grid_y, pillar_classes[np.bincount(pillar_classes.astype(int)).argmax()]]
-            # )
-        min_ground_layer_elev = np.array(min_ground_layer_elev)
-        max_ground_layer_elev = np.array(max_ground_layer_elev)
-        ceiling_layer_elev = np.array(ceiling_layer_elev)
+                # Plot each semantic map
+                save_semantic_plot(semantic_layers[:, :, 0], f"./output/sem/min_ground/{frame_idx:06d}.png")
+                save_semantic_plot(semantic_layers[:, :, 1], f"./output/sem/max_ground/{frame_idx:06d}.png")
+                save_semantic_plot(semantic_layers[:, :, 2], f"./output/sem/ceiling/{frame_idx:06d}.png")
 
-        min_ground_layer_sem = np.array(min_ground_layer_sem)
-        max_ground_layer_sem = np.array(max_ground_layer_sem)
-        ceiling_layer_sem = np.array(ceiling_layer_sem)
-        # semantic_points = np.array(semantic_points)
-
-        if VISUALIZE:
-            # Create a figure with 3 subplots for the three elevation maps
-            fig, axes = plt.subplots(2, 3, figsize=(18, 6))
-
-            # Function to plot elevation data on a given axis
-            def plot_elevation_map(ax, elevation_data, title):
-                grid_x = np.unique(elevation_data[:, 0])
-                grid_y = np.unique(elevation_data[:, 1])
-                elev_matrix = np.full((len(grid_y), len(grid_x)), np.nan)
-                for point in elevation_data:
-                    x_idx = np.where(grid_x == point[0])[0][0]
-                    y_idx = np.where(grid_y == point[1])[0][0]
-                    elev_matrix[y_idx, x_idx] = point[2]
-                im = ax.imshow(
-                    elev_matrix,
-                    extent=(grid_x.min(), grid_x.max(), grid_y.min(), grid_y.max()),
-                    origin="lower",
-                    cmap="viridis",
-                    vmax=10.0,  # Set maximum elevation to 10 meters
-                )
-                fig.colorbar(im, ax=ax, label="Elevation")
-                ax.set_xlabel("X")
-                ax.set_ylabel("Y")
-                ax.set_title(title)
-            
-            def plot_color_image(ax, color_data, title):
-                grid_x = np.unique(color_data[:, 0])
-                grid_y = np.unique(color_data[:, 1])
-                color_matrix = np.full((len(grid_y), len(grid_x), 3), np.nan)
-                for point in color_data:
-                    x_idx = np.where(grid_x == point[0])[0][0]
-                    y_idx = np.where(grid_y == point[1])[0][0]
-                    color_matrix[y_idx, x_idx] = point[2:]
-                ax.imshow(
-                    color_matrix,
-                    extent=(grid_x.min(), grid_x.max(), grid_y.min(), grid_y.max()),
-                    origin="lower",
-                )
-                ax.set_xlabel("X")
-                ax.set_ylabel("Y")
-                ax.set_title(title)
-
-            # Plot each elevation map
-            plot_elevation_map(axes[0][0], min_ground_layer_elev, "Minimum Ground Elevation")
-            plot_elevation_map(axes[0][1], max_ground_layer_elev, "Maximum Ground Elevation")
-            plot_elevation_map(axes[0][2], ceiling_layer_elev, "Ceiling Elevation")
-            plot_color_image(axes[1][0], min_ground_layer_sem, "Minimum Ground Semantic")
-            plot_color_image(axes[1][1], max_ground_layer_sem, "Maximum Ground Semantic")
-            plot_color_image(axes[1][2], ceiling_layer_sem, "Ceiling Semantic")
-
-            plt.tight_layout()
-            # save plt plot to file
-            plt.savefig("elevation_semantic_maps.png")
-
-            # pickle the relevant data in one object
-            with open("elevation_semantic_maps.pkl", "wb") as f:
-                pickle.dump(
-                    {
-                        "min_ground_layer_elev": min_ground_layer_elev,
-                        "max_ground_layer_elev": max_ground_layer_elev,
-                        "ceiling_layer_elev": ceiling_layer_elev,
-                        "min_ground_layer_sem": min_ground_layer_sem,
-                        "max_ground_layer_sem": max_ground_layer_sem,
-                        "ceiling_layer_sem": ceiling_layer_sem,
-                    },
-                    f)
+                #TODO: Add mask
+                # Make save as raw images
+                # Make lidar scan images with same format
 
 
 if __name__ == "__main__":
