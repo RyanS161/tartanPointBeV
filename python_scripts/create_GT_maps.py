@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import pickle
 from scipy.spatial.transform import Rotation
+import line_profiler
+from collections import defaultdict
 
 VISUALIZE = True
 VISUALIZE_VOXEL_SIZE = 0.5
@@ -12,7 +14,7 @@ GRID_RESOLUTION = 0.5
 GRID_SIZE = 50  # 25 meters -> 50 meters by 50 meters grid
 GRID_SIZE_PIXELS = int(GRID_SIZE / GRID_RESOLUTION)
 MAX_Z_VALUE = 15.0  # 15 meters, we probably don't care about anything higher
-MIN_ELEV_TUNING_FACTOR = 2
+MIN_ELEV_TUNING_FACTOR = 5
 DESIRED_CEILING_GAP = 2.0
 
 SEG_RGBS_PATH = "/Users/ryanslocum/Documents/current_courses/PLR/repos/misc/files_from_manthan/seg_rgbs.txt"
@@ -110,6 +112,8 @@ class GroundTruthMapGenerator:
         vis_pc = point_cloud.voxel_down_sample(voxel_size=vis_voxel_size)
         o3d.visualization.draw_geometries([vis_pc])
 
+
+    # @line_profiler.profile
     def create_maps(self):
         print("Creating 2.5D maps")
         # downsampled_pc = self.point_cloud.voxel_down_sample(
@@ -118,9 +122,9 @@ class GroundTruthMapGenerator:
         pose_file = os.path.join(self.parent_dir, "pose_lcam_front.txt")
         poses = np.loadtxt(pose_file)
 
-        self.point_cloud = self.point_cloud.voxel_down_sample(
-            voxel_size=self.grid_resolution/2
-        )
+        # self.point_cloud = self.point_cloud.voxel_down_sample(
+        #     voxel_size=self.grid_resolution/2
+        # )
 
         for frame_idx, pose in tqdm(enumerate(poses)):
             current_pose = pose_to_SE(pose)
@@ -137,11 +141,16 @@ class GroundTruthMapGenerator:
             semantic_layers = np.full((GRID_SIZE_PIXELS, GRID_SIZE_PIXELS, 3, 3), np.nan)
             # semantic_points = []
 
+            grid_to_point_indices = defaultdict(list)
+            for idx, grid_cell in enumerate(inv_indices):
+                grid_to_point_indices[grid_cell].append(idx)
+
+
             for i in range(len(unique_grid_coords)):
                 x, y = unique_grid_coords[i]
-                pillar_points = points[inv_indices == i]
+                pillar_points = points[grid_to_point_indices[i]]
                 if len(pillar_points) > MIN_ELEV_TUNING_FACTOR:
-                    pillar_colors = colors[inv_indices == i]
+                    pillar_colors = colors[grid_to_point_indices[i]]
                     sorted_indices = np.argsort(pillar_points[:, 2])
                     sorted_z_values = pillar_points[sorted_indices, 2]
                     sorted_colors = pillar_colors[sorted_indices]
@@ -176,9 +185,9 @@ class GroundTruthMapGenerator:
                 save_semantic_plot(semantic_layers[:, :, 1], f"./output/sem/max_ground/{frame_idx:06d}.png")
                 save_semantic_plot(semantic_layers[:, :, 2], f"./output/sem/ceiling/{frame_idx:06d}.png")
 
-                #TODO: Add mask
-                # Make save as raw images
-                # Make lidar scan images with same format
+
+            # if frame_idx >= 20:
+            #     break
 
 
 if __name__ == "__main__":
