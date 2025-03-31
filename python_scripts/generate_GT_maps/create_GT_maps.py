@@ -3,22 +3,13 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-import pickle
 from scipy.spatial.transform import Rotation
-import line_profiler
 from collections import defaultdict
+from configs import *
+# import line_profiler
 
 VISUALIZE = True
 VISUALIZE_VOXEL_SIZE = 0.5
-GRID_RESOLUTION = 0.5
-GRID_SIZE = 50  # 25 meters -> 50 meters by 50 meters grid
-GRID_SIZE_PIXELS = int(GRID_SIZE / GRID_RESOLUTION)
-MAX_Z_VALUE = 15.0  # 15 meters, we probably don't care about anything higher
-MIN_ELEV_TUNING_FACTOR = 5
-DESIRED_CEILING_GAP = 2.0
-
-SEG_RGBS_PATH = "/Users/ryanslocum/Documents/current_courses/PLR/repos/misc/files_from_manthan/seg_rgbs.txt"
-
 
 def pose_to_SE(pose):
     T = np.eye(4)
@@ -27,46 +18,21 @@ def pose_to_SE(pose):
     return T
 
 def save_elevation_data(elevation_data, file_path):
+    if not os.path.exists(os.path.dirname(file_path)):
+        os.makedirs(os.path.dirname(file_path))
     np.save(file_path, elevation_data)
 
 def save_semantic_plot(elevation_data, file_path):
+    if not os.path.exists(os.path.dirname(file_path)):
+        os.makedirs(os.path.dirname(file_path))
     plt.imsave(file_path, elevation_data)
-
-def load_rgb_mapping(file_path):
-    """Load segmentation ID to RGB mapping from a file."""
-    colors = []
-    with open(file_path, "r") as f:
-        for line in f:
-            rgb_values = tuple(
-                map(int, line.strip().split(","))
-            )  # Convert to (R, G, B) tuple
-            colors.append(rgb_values)
-    return colors
-
-
-COLORS_ARR = load_rgb_mapping(SEG_RGBS_PATH)
-
-
-def float_color_to_seg_color(rgb):
-    round_then_int_x = lambda x: int(np.round(x))
-    int_bgr_tuple = tuple(map(round_then_int_x, rgb * 255))[::-1]
-    try:
-        idx = COLORS_ARR.index(int_bgr_tuple)
-        return idx
-    except ValueError:
-        print("Color not found in mapping")
-        return np.nan
 
 
 class GroundTruthMapGenerator:
     def __init__(self, pc_path, grid_resolution=1.0):
         self.pc_path = pc_path
-        self.parent_dir = os.path.dirname(pc_path)
         self.grid_resolution = grid_resolution
         self.load_data()
-        # self.visualize_point_cloud(vis_voxel_size=VISUALIZE_VOXEL_SIZE)
-        # self.clean_data()
-        # self.visualize_point_cloud(vis_voxel_size=VISUALIZE_VOXEL_SIZE)
 
     def load_data(self):
         print(f"Loading point cloud from {self.pc_path}")
@@ -76,6 +42,17 @@ class GroundTruthMapGenerator:
             and self.point_cloud.has_points()
             and self.point_cloud.has_colors()
         )
+
+        # extract all points
+        self.points = np.asarray(self.point_cloud.points).astype(np.float32)
+        self.colors = (np.asarray(self.point_cloud.colors)*255.0).astype(np.uint8)
+        self.colors = np.hstack((self.colors, np.full((self.colors.shape[0], 1), 255))).astype(np.uint8)
+
+        # transform all points
+        self.homogenous_points = np.hstack([self.points, np.ones((self.points.shape[0], 1))]).T.astype(np.float32)
+
+        self.grid_min_bound=[-np.ceil(BOUNDING_BOX_SIZE_M/2), -np.ceil(BOUNDING_BOX_SIZE_M/2), -MAX_Z_VALUE_M]
+        self.grid_max_bound=[np.ceil(BOUNDING_BOX_SIZE_M/2), np.ceil(BOUNDING_BOX_SIZE_M/2), MAX_Z_VALUE_M]
 
     def transform_and_clean_point_cloud(self, transformation):
         # print("Cleaning point cloud data")
@@ -92,21 +69,33 @@ class GroundTruthMapGenerator:
         # Apply transformation
         new_pc.transform(transformation)
         # Crop point cloud to specified bounds
-        BBOX_SIZE = np.ceil(GRID_SIZE/2)
+        bb_size = np.ceil(BOUNDING_BOX_SIZE_M/2)
         bbox = o3d.geometry.AxisAlignedBoundingBox(
-            min_bound=[-BBOX_SIZE, -BBOX_SIZE, -MAX_Z_VALUE],
-            max_bound=[BBOX_SIZE, BBOX_SIZE, MAX_Z_VALUE],
+            min_bound=[-bb_size, -bb_size, -MAX_Z_VALUE_M],
+            max_bound=[bb_size, bb_size, MAX_Z_VALUE_M],
         )
         new_pc = new_pc.crop(bbox)
         min_bound = new_pc.get_min_bound()
         # Remove points with elevation < 0
         points = np.asarray(new_pc.points)
         colors = np.asarray(new_pc.colors)
-        # inverting height to be z-up because it really fucks with my head otherwise
-        points[:, 2] *= -1.0
-        # remove invalid seg colors
-        # clean points
+        # inverting height to be z-up
+        points[:,2] *= -1.0
         return points, colors, min_bound
+    
+    # @line_profiler.profile
+    def transform_point_cloud_with_numpy(self, transformation):
+        transformed_points = np.dot(transformation.astype(np.float32), self.homogenous_points).T
+        transformed_points = transformed_points[:, :3]
+
+        # remove according to bounding box
+        mask = np.all((transformed_points >= self.grid_min_bound) & (transformed_points <= self.grid_max_bound), axis=1)
+        filtered_points = transformed_points[mask]
+        colors = self.colors[mask]
+        # inverting height to be z-up
+        filtered_points[:,2] *= -1.0
+
+        return filtered_points, colors
 
     def visualize_point_cloud(self, point_cloud, vis_voxel_size):
         vis_pc = point_cloud.voxel_down_sample(voxel_size=vis_voxel_size)
@@ -119,7 +108,7 @@ class GroundTruthMapGenerator:
         # downsampled_pc = self.point_cloud.voxel_down_sample(
         #     voxel_size=(self.grid_resolution / 2)
         # )
-        pose_file = os.path.join(self.parent_dir, "pose_lcam_front.txt")
+        pose_file = os.path.join(TRAJ_ROOT, "pose_lcam_front.txt")
         poses = np.loadtxt(pose_file)
 
         # self.point_cloud = self.point_cloud.voxel_down_sample(
@@ -129,16 +118,16 @@ class GroundTruthMapGenerator:
         for frame_idx, pose in tqdm(enumerate(poses)):
             current_pose = pose_to_SE(pose)
             transformation = np.linalg.inv(current_pose)
-            points, colors, min_bounds = self.transform_and_clean_point_cloud(transformation)
+            points, colors = self.transform_point_cloud_with_numpy(transformation)
             # classes = np.array([float_color_to_seg_color(color) for color in colors])
             grid_coords = np.floor(
-                (points[:, :2] - min_bounds[:2]) / self.grid_resolution
+                (points[:, :2] - self.grid_min_bound[:2]) / (BOUNDING_BOX_SIZE_M/IMAGE_SIZE_PX)
             ).astype(int)
             unique_grid_coords, inv_indices = np.unique(
                 grid_coords, axis=0, return_inverse=True
             )
-            elevation_layers = np.full((GRID_SIZE_PIXELS, GRID_SIZE_PIXELS, 3), np.nan)
-            semantic_layers = np.full((GRID_SIZE_PIXELS, GRID_SIZE_PIXELS, 3, 3), np.nan)
+            elevation_layers = np.full((IMAGE_SIZE_PX, IMAGE_SIZE_PX, 3), np.nan)
+            semantic_layers = np.full((IMAGE_SIZE_PX, IMAGE_SIZE_PX, 3, 4), 0, dtype=np.uint8)
             # semantic_points = []
 
             grid_to_point_indices = defaultdict(list)
@@ -147,9 +136,9 @@ class GroundTruthMapGenerator:
 
 
             for i in range(len(unique_grid_coords)):
-                x, y = unique_grid_coords[i]
                 pillar_points = points[grid_to_point_indices[i]]
                 if len(pillar_points) > MIN_ELEV_TUNING_FACTOR:
+                    x, y = unique_grid_coords[i]
                     pillar_colors = colors[grid_to_point_indices[i]]
                     sorted_indices = np.argsort(pillar_points[:, 2])
                     sorted_z_values = pillar_points[sorted_indices, 2]
@@ -174,23 +163,18 @@ class GroundTruthMapGenerator:
                         elevation_layers[x,y,1] = non_min_points[-1]
                         semantic_layers[x,y,1] = non_min_colors[-1]
 
-            if VISUALIZE:
-                # Plot each elevation map
-                save_elevation_data(elevation_layers[:, :, 0], f"./output/elev/min_ground/{frame_idx:06d}.npy")
-                save_elevation_data(elevation_layers[:, :, 1], f"./output/elev/max_ground/{frame_idx:06d}.npy")
-                save_elevation_data(elevation_layers[:, :, 2], f"./output/elev/ceiling/{frame_idx:06d}.npy")
+            # Plot each elevation map
+            save_elevation_data(elevation_layers[:, :, 0], os.path.join(TRAJ_ROOT, f"gt_output/elev/min_ground/{frame_idx:06d}.npy"))
+            save_elevation_data(elevation_layers[:, :, 1], os.path.join(TRAJ_ROOT, f"gt_output/elev/max_ground/{frame_idx:06d}.npy"))
+            save_elevation_data(elevation_layers[:, :, 2], os.path.join(TRAJ_ROOT, f"gt_output/elev/ceiling/{frame_idx:06d}.npy"))
 
-                # Plot each semantic map
-                save_semantic_plot(semantic_layers[:, :, 0], f"./output/sem/min_ground/{frame_idx:06d}.png")
-                save_semantic_plot(semantic_layers[:, :, 1], f"./output/sem/max_ground/{frame_idx:06d}.png")
-                save_semantic_plot(semantic_layers[:, :, 2], f"./output/sem/ceiling/{frame_idx:06d}.png")
-
-
-            # if frame_idx >= 20:
-            #     break
+            # Plot each semantic map
+            save_semantic_plot(semantic_layers[:, :, 0], os.path.join(TRAJ_ROOT, f"gt_output/sem/min_ground/{frame_idx:06d}.png"))
+            save_semantic_plot(semantic_layers[:, :, 1], os.path.join(TRAJ_ROOT, f"gt_output/sem/max_ground/{frame_idx:06d}.png"))
+            save_semantic_plot(semantic_layers[:, :, 2], os.path.join(TRAJ_ROOT, f"gt_output/sem/ceiling/{frame_idx:06d}.png"))
 
 
 if __name__ == "__main__":
-    PC_PATH = "/Users/ryanslocum/Documents/current_courses/PLR/data/tartanground/Downtown/Data_easy/P0006/point_cloud.pcd"
-    generator = GroundTruthMapGenerator(PC_PATH, grid_resolution=GRID_RESOLUTION)
+    pc_path = os.path.join(TRAJ_ROOT, "point_cloud.pcd")
+    generator = GroundTruthMapGenerator(pc_path)
     generator.create_maps()
