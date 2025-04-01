@@ -143,12 +143,7 @@ class NuScenesDatamodule(pl.LightningDataModule):
         self.visualise_mode = visualise_mode
 
     def setup(self, stage: Optional[str] = None):
-        if self.version == "tartanair":
-            from tartanair import TartanAirDataset
-            dataset = TartanAirDataset(self.dataroot)
-            dataset.create_image_dataset("Downtown", camera_name=self.img_params.cams)
-            nusc = dataset.dataset
-        elif not self.is_lyft:
+        if not self.is_lyft:
             nusc = NuScenes(
                 version="v1.0-{}".format(self.version),
                 dataroot=self.dataroot,
@@ -158,10 +153,9 @@ class NuScenesDatamodule(pl.LightningDataModule):
             dataroot = Path(self.dataroot).parent / "lyft"
             nusc = LyftDataset(
                 data_path=dataroot,
-                json_path=os.path.join(dataroot, camera_name="train_data"),
+                json_path=os.path.join(dataroot, "train_data"),
                 verbose=True,
             )
-
         # Validation dataset
         partial_data = partial(
             self.cls,

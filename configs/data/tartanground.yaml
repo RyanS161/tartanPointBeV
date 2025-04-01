@@ -4,7 +4,6 @@ defaults:
 
 _target_: pointbev.data.datamodule.TartangroundDatamodule
 
-# Nuscenes
 envs: 
  - 'Downtown'
 dataroot: ${paths.data_dir}tartanground
@@ -27,12 +26,18 @@ img_params:
   H: 640
   W: 640
   cams:
+    # - 'lcam_front'
+    # - 'lcam_back'
+    # - 'lcam_left'
+    # - 'lcam_right'
+    # - 'lcam_top'
+    # - 'lcam_bottom'
     - 'lcam_front'
+    - 'lcam_front_right'
+    - 'lcam_front_left'
+    - 'lcam_back_right'
+    - 'lcam_back_left'
     - 'lcam_back'
-    - 'lcam_left'
-    - 'lcam_right'
-    - 'lcam_top'
-    - 'lcam_bottom'
   Ncams: 6
   update_intrinsics: True
   downsample: ${model.net.backbone.downsample}
@@ -53,8 +58,9 @@ train_shuffle: True
 
 # Inputs.
 normalize_img: True 
-keep_input_binimg: True
-keep_input_centr_offs: True
+# requires me to either have the binimg or hdmap set to True (which makes sense since otherwise there's no lable for the task)
+keep_input_binimg: True  # was True
+keep_input_centr_offs: False # was True
 keep_input_detection: False
 keep_input_hdmap: False
 hdmap_names: ['drivable_area']
