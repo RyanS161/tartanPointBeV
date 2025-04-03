@@ -24,8 +24,8 @@ img_loader:
   mode: PIL
 
 img_params:
-  H: 900
-  W: 1600
+  H: 150 # was 900
+  W: 400 # was 1600
   cams:
     - 'CAM_FRONT_LEFT'
     - 'CAM_FRONT'
@@ -55,7 +55,7 @@ train_shuffle: True
 # Inputs.
 normalize_img: True 
 keep_input_binimg: True
-keep_input_centr_offs: True
+keep_input_centr_offs: False
 keep_input_detection: False
 keep_input_hdmap: False
 hdmap_names: ['drivable_area']

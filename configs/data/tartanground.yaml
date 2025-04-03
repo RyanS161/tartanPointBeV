@@ -54,7 +54,7 @@ num_workers: 16
 pin_memory: True
 prefetch_factor: 2
 train_drop_last: True
-train_shuffle: True
+train_shuffle: False
 
 # Inputs.
 normalize_img: True 

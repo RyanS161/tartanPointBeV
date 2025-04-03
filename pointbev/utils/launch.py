@@ -18,7 +18,7 @@ def modif_config_based_on_flags(config):
         config.trainer.num_sanity_val_steps = 1
         config.trainer.overfit_batches = 1
 
-        config.data.train_shuffle = True
+        config.data.train_shuffle = False
         config.model.train_kwargs.train_visu_imgs = True
         config.model.val_kwargs.val_visu_imgs = True
         config.model.name = "debug"

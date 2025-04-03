@@ -16,6 +16,7 @@ import json
 import os
 import numpy as np
 import torchvision.transforms.functional as TF  # TODO only temporary needed
+import torchvision.transforms as T # TODO only temporary needed
 from PIL import Image
 import matplotlib.pyplot as plt
 
@@ -183,7 +184,6 @@ class TartangroundDatamodule(pl.LightningDataModule):
     'imgs': {cam_name: tensor(B, 3, H, W)},   # camera → batch of images
     'rots': tensor(B, N, 3, 3),     seems to be the static transformation of the camera to base frame
     'trans': tensor(B, N, 3),       seems to be the static transformation of the camera to the base frame
-    # TODO Question: Do we define the cameras to be all located in one point at the base frame (tartanAir), or we do it as in nuScenes where the baseframe sits at the middle point of the rear axle
     'intrins': tensor(B, N, 3, 3),
     'bev_aug': tensor(B, 2, 3),
     'egoTin_to_seq': tensor(B, 4, 4)
@@ -193,7 +193,7 @@ class TartangroundDatamodule(pl.LightningDataModule):
         """
         Convert list of samples → batch dict that matches PointBEV forward() inputs.
         """
-        # print("📸 batch frame indices:", [sample["frame_idx"] for sample in batch])
+        # print("batch frame indices:", [sample["frame_idx"] for sample in batch])
         B = len(batch) # batch size
         N = len(self.img_params.cams)  # number of cameras
         egoTin_to_seq_list = [] # egoTin_to_seq is not camera specific but for base_frame (front camera)
@@ -208,23 +208,23 @@ class TartangroundDatamodule(pl.LightningDataModule):
 
             if os.path.exists(binimg_file):
                 binimg_np = np.array(Image.open(binimg_file))
-                # If mask is [0,255], we typically convert to [0,1]
-                # print(f"📂 {binimg_file} → shape={binimg_np.shape}, dtype={binimg_np.dtype}, unique={np.unique(binimg_np)}")
-                binimg_ = torch.from_numpy(binimg_np).float().unsqueeze(0) / 255.0
+                # print(f"{binimg_file} → shape={binimg_np.shape}, dtype={binimg_np.dtype}, unique={np.unique(binimg_np)}")
+                binimg_ = torch.from_numpy(binimg_np).float().unsqueeze(0) # / 255.0
             else:
-                print(f"❌ {binimg_file} not found.")
-                binimg_ = torch.zeros((1, 200, 200), dtype=torch.float32)
+                print(f"{binimg_file} not found.")
+                binimg_ = torch.zeros((1, 100, 100), dtype=torch.float32)
 
             if os.path.exists(valid_binimg_file):
                 valid_np = np.array(Image.open(valid_binimg_file))
+                # print(f"{valid_binimg_file} → shape={valid_np.shape}, dtype={valid_np.dtype}, unique={np.unique(valid_np)}")
                 valid_binimg_ = torch.from_numpy(valid_np).bool().unsqueeze(0)
             else:
-                valid_binimg_ = torch.zeros((1, 200, 200), dtype=torch.bool)
+                valid_binimg_ = torch.zeros((1, 100, 100), dtype=torch.bool)
 
-            binimg_ = TF.resize(binimg_, [200, 200], antialias=True)
-            valid_binimg_ = TF.resize(valid_binimg_.float(), [200, 200], antialias=True).bool()
+            binimg_ = TF.resize(binimg_, [200, 200], interpolation=T.InterpolationMode.NEAREST)
+            valid_binimg_ = TF.resize(valid_binimg_.float(), [200, 200], interpolation=T.InterpolationMode.NEAREST).bool()
 
-            # print(f"🧪 binimg_ final sum before append: {binimg_.sum().item()}")
+            # print(f"binimg_ final sum before append: {binimg_.sum().item()}")
             binimgs.append(binimg_)
             valid_binimgs.append(valid_binimg_)
 
@@ -249,32 +249,21 @@ class TartangroundDatamodule(pl.LightningDataModule):
                 # The dictionary for this sample, for this camera
                 frame_idx = sample["frame_idx"]  # again so you know which sample
 
-                # ---------------
-                # Load the image from sample
-                # ---------------
                 img = sample[cam]['image_0']
                 img_tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
                 # If you want smaller size:
                 img_tensor = TF.resize(img_tensor, [128, 128], antialias=True)
                 cam_imgs.append(img_tensor)
 
-                # ---------------
-                # Intrinsics for this camera
-                # ---------------
                 intr = torch.tensor(self.camera_params[cam]['intrinsics'], dtype=torch.float32)
                 cam_intr.append(intr)
 
-                # ---------------
-                # R, t (whatever you do)
-                # ---------------
                 R_body_camera = torch.tensor(self.camera_params[cam]['R_body_camera'], dtype=torch.float32)
                 position = torch.zeros((3, 1), dtype=torch.float32)
                 cam_rots.append(R_body_camera)
                 cam_trans.append(position)
 
-            # ---------------
-            # Stack across the batch dimension
-            # ---------------
+            # stack across the batch dimension
             cam_imgs  = torch.stack(cam_imgs, dim=0)   # [B, 3, H, W]
             cam_intr  = torch.stack(cam_intr, dim=0)   # [B, 3, 3]
             cam_trans = torch.stack(cam_trans, dim=0)  # [B, 3, 1]
@@ -285,35 +274,24 @@ class TartangroundDatamodule(pl.LightningDataModule):
             all_cams_trans.append(cam_trans)
             all_cams_rots.append(cam_rots)
 
-        # --------------------------------------------------
-        # 3) Combine across cameras (N of them)
-        #    each list entry is shape [B, ...], so we stack along dim=0
-        # --------------------------------------------------
         all_cams_imgs   = torch.stack(all_cams_imgs, dim=0)      # [N, B, 3, H, W]
         all_cams_intr   = torch.stack(all_cams_intr, dim=0)      # [N, B, 3, 3]
         all_cams_trans  = torch.stack(all_cams_trans, dim=0)     # [N, B, 3, 1]
         all_cams_rots   = torch.stack(all_cams_rots, dim=0)      # [N, B, 3, 3]
 
-        # If your model expects shape [B, T=1, N, 3, H, W], we do:
+        # bring dimensions into order [B, T=1, N, 3, H, W]
         imgs    = all_cams_imgs.permute(1, 0, 2, 3, 4).unsqueeze(1)
         intrins = all_cams_intr.permute(1, 0, 2, 3).unsqueeze(1)
         trans   = all_cams_trans.permute(1, 0, 2, 3).unsqueeze(1)
         rots    = all_cams_rots.permute(1, 0, 2, 3).unsqueeze(1)
 
-        # --------------------------------------------------
-        # 4) Stack binimgs across batch
-        # --------------------------------------------------
-        # Currently `binimgs` is a list of length B,
-        # each is shape [1, 200, 200].
         binimg = torch.stack(binimgs, dim=0).unsqueeze(1)        # [B, 1, 1, 200, 200]
         valid_binimg = torch.stack(valid_binimgs, dim=0).unsqueeze(1)
 
-        # Ego Tin stuff
         egoTin_to_seq = torch.stack(egoTin_to_seq_list, dim=0)   # [B, T=1, 4, 4]
         # egoTin_to_seq = egoTin_to_seq.unsqueeze(1)               # if T=1
 
-        # This is your "no augmentation" matrix
-        bev_aug = torch.eye(4).expand(B, 1, 4, 4).clone()
+        bev_aug = torch.eye(4).expand(B, 1, 4, 4).clone() # no augmentation for now
 
         return {
             "frame_idx": [sample["frame_idx"] for sample in batch],
@@ -365,10 +343,8 @@ class TartangroundDatamodule(pl.LightningDataModule):
         #             # Load binary mask if exists
         #             if os.path.exists(binimg_file):
         #                 img_np = np.array(Image.open(binimg_file))
-        #                 print(f"✅ Loaded binimg {binimg_file}, dtype={img_np.dtype}, shape={img_np.shape}, unique={np.unique(img_np)}")
         #                 binimg = torch.from_numpy(img_np).float().unsqueeze(0)
         #             else:
-        #                 print(f"⚠️ binimg file not found: {binimg_file}")
         #                 binimg = torch.zeros((1, 200, 200), dtype=torch.float32)
 
 
@@ -378,7 +354,6 @@ class TartangroundDatamodule(pl.LightningDataModule):
         #                     np.array(Image.open(valid_binimg_file))
         #                 ).bool().unsqueeze(0)
         #             else:
-        #                 print(f"⚠️ binimg file not found: {valid_binimg}")
         #                 valid_binimg = torch.zeros((1, 200, 200), dtype=torch.float32)
             
 

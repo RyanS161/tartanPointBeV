@@ -13,7 +13,7 @@ model_checkpoint:
   save_weights_only: False 
   every_n_train_steps: null 
   train_time_interval: null 
-  every_n_epochs: null 
+  every_n_epochs: 2 
   save_on_train_epoch_end: null
 
   dirpath: ${paths.output_dir}/checkpoints
