@@ -3,8 +3,10 @@ from PIL import Image
 import numpy as np
 import open3d as o3d
 from tqdm import tqdm
+import json
 
 from configs import *
+from sklearn.cluster import KMeans
 
 
 def create_binned_elev_maps(input_dir, output_dir):
@@ -110,6 +112,15 @@ def process_lidar_to_bev(input_folder, output_folder):
             # Save as PNG
             Image.fromarray(bev_image).save(output_path)
 
-
-def collapse_semantics(input_folder, output_folder):
-    pass
+def class_to_num_grouping(json_file, preferred_clustering):
+    class_to_num_mapping = {}
+    with open(json_file, 'r') as f:
+        original_semantics = json.load(f)['name_map']
+        for new_class, old_classes in preferred_clustering.items():
+            for old_class in old_classes:
+                if new_class not in class_to_num_mapping:
+                    class_to_num_mapping[new_class] = []
+                class_to_num_mapping[new_class].append(original_semantics[old_class])
+            
+    
+    return class_to_num_mapping
