@@ -19,6 +19,7 @@ import torchvision.transforms.functional as TF  # TODO only temporary needed
 import torchvision.transforms as T # TODO only temporary needed
 from PIL import Image
 import matplotlib.pyplot as plt
+from pointbev.utils.imgs import NORMALIZE_IMG
 
 class TartangroundDatamodule(pl.LightningDataModule):
     def __init__(
@@ -40,6 +41,7 @@ class TartangroundDatamodule(pl.LightningDataModule):
         train_drop_last=True,
         train_shuffle=False,
         val_shuffle=False,
+        normalize_img=True,
         **kwargs):
         super().__init__()
 
@@ -70,8 +72,12 @@ class TartangroundDatamodule(pl.LightningDataModule):
                                   modality=['image'],
                                   camera_name=list(self.img_params.cams))
         wrapped_dataset = IndexWrapper(data.dataset) # Wrap the dataset to add indices
-        train_len = int(0.8*len(wrapped_dataset))
-        self.train_data, self.val_data = random_split(wrapped_dataset, [train_len, len(wrapped_dataset)-train_len])
+
+        self.train_data = wrapped_dataset  # Use all data for training
+        val_len = min(250, len(wrapped_dataset)//5)  # Use ~20% or max 250 samples
+        self.val_data = torch.utils.data.Subset(wrapped_dataset, list(range(val_len)))
+        print(f"Training set size: {len(self.train_data)}, Validation set size: {len(self.val_data)}")
+
 
         # TODO could probably achieve that this is integrated into the data.dataset, but then need to adapt the 'create_image_dataset' func
         self.camera_params = {}
@@ -124,8 +130,8 @@ class TartangroundDatamodule(pl.LightningDataModule):
                     [float(x) for x in line.strip().split()] for line in content
                 ]
 
-        self.binimg_path = "/home/michael/Desktop/maps/output/sem/max_ground/car_masks"
-        self.valid_binimg_path = "/home/michael/Desktop/maps/output/sem/max_ground/valid_masks"
+        self.binimg_path = "/home/michael/Desktop/training_data/gt_output/sem/max_ground/car_masks"
+        self.valid_binimg_path = "/home/michael/Desktop/training_data/gt_output/sem/max_ground/valid_masks"
             
 
     def train_dataloader(self):
@@ -203,11 +209,12 @@ class TartangroundDatamodule(pl.LightningDataModule):
         for i, sample in enumerate(batch):
             frame_idx = sample["frame_idx"]
 
-            binimg_file       = os.path.join(self.binimg_path, f"{frame_idx:06d}.png")
-            valid_binimg_file = os.path.join(self.valid_binimg_path, f"{frame_idx:06d}.png")
+            binimg_file       = os.path.join(self.binimg_path, f"{frame_idx:06d}.npy")
+            valid_binimg_file = os.path.join(self.valid_binimg_path, f"{frame_idx:06d}.npy")
 
             if os.path.exists(binimg_file):
-                binimg_np = np.array(Image.open(binimg_file))
+                # binimg_np = np.array(Image.open(binimg_file))
+                binimg_np = np.load(binimg_file)
                 # print(f"{binimg_file} → shape={binimg_np.shape}, dtype={binimg_np.dtype}, unique={np.unique(binimg_np)}")
                 binimg_ = torch.from_numpy(binimg_np).float().unsqueeze(0) # / 255.0
             else:
@@ -215,7 +222,8 @@ class TartangroundDatamodule(pl.LightningDataModule):
                 binimg_ = torch.zeros((1, 100, 100), dtype=torch.float32)
 
             if os.path.exists(valid_binimg_file):
-                valid_np = np.array(Image.open(valid_binimg_file))
+                # valid_np = np.array(Image.open(valid_binimg_file))
+                valid_np = np.load(valid_binimg_file)
                 # print(f"{valid_binimg_file} → shape={valid_np.shape}, dtype={valid_np.dtype}, unique={np.unique(valid_np)}")
                 valid_binimg_ = torch.from_numpy(valid_np).bool().unsqueeze(0)
             else:
@@ -250,7 +258,9 @@ class TartangroundDatamodule(pl.LightningDataModule):
                 frame_idx = sample["frame_idx"]  # again so you know which sample
 
                 img = sample[cam]['image_0']
-                img_tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+                img_pil = Image.fromarray(img)
+                img_tensor = NORMALIZE_IMG(img_pil)
+                # img_tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0 # TODO IS NORMALIZING NEEDED SINCE THEY HAVE SOME PARAM CALLED 'normalize_img = True'
                 # If you want smaller size:
                 img_tensor = TF.resize(img_tensor, [128, 128], antialias=True)
                 cam_imgs.append(img_tensor)
@@ -419,19 +429,23 @@ class TartangroundDatamodule(pl.LightningDataModule):
         """
         poses = [TartangroundDatamodule.pose_vec_to_matrix(pose_entries[i]) for i in frame_indices]
         
-        # Reference pose (usually last)
-        T_ref = poses[-1]
-        T_ref_inv = np.linalg.inv(T_ref)
+        # # Reference pose (usually last)
+        # T_ref = poses[-1]
+        # T_ref_inv = np.linalg.inv(T_ref)
 
-        # Compute egoTin_to_seq[i] = T_ref^-1 @ T_i
-        T_rel = [T_ref_inv @ T_i for T_i in poses]
-        return torch.tensor(np.stack(T_rel), dtype=torch.float32)  # shape (T, 4, 4)
+        # # Compute egoTin_to_seq[i] = T_ref^-1 @ T_i
+        # T_rel = [T_ref_inv @ T_i for T_i in poses]
+        # return torch.tensor(np.stack(T_rel), dtype=torch.float32)  # shape (T, 4, 4)
+        
+        # new approach: we just return the relative pose to the global origin
+        return torch.tensor(np.stack(poses), dtype=torch.float32)  # shape (T=1, 4, 4)
+
     
     def pose_vec_to_matrix(pose):
         """Convert [x, y, z, qx, qy, qz, qw] to 4x4 transformation matrix"""
         trans = np.array(pose[:3])
-        quat = np.array(pose[3:7])  # assuming format [qx, qy, qz, qw]
-        rot_mat = Rotation.from_quat(quat).as_matrix()
+        quat = np.array(pose[3:7])  # format [qx, qy, qz, qw]
+        rot_mat = Rotation.from_quat(quat).as_matrix() # expects [qx, qy, qz, qw]
         T = np.eye(4)
         T[:3, :3] = rot_mat
         T[:3, 3] = trans
