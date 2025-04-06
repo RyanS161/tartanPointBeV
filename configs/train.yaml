@@ -62,7 +62,7 @@ model:
   val_kwargs:
     val_visu_frequency: 250
     val_visu_imgs: false
-    val_calculate_losses: False
+    val_calculate_losses: true # was False
     
   metric_kwargs:
     with_dynamic_tag: false
