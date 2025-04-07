@@ -26,53 +26,19 @@ def create_binned_elev_maps(input_dir, output_dir):
             np.save(output_file_path, one_hot_encoded)
 
 
-def binary_mask_helper(image_path):
-    # Open the image
-    image = Image.open(image_path).convert("RGBA")
-    pixels = image.load()
-
-    # Create blank images for the masks
-    color_mask = Image.new("1", image.size)  # Binary mask for the target color
-    transparent_mask = Image.new("1", image.size)  # Binary mask for transparency
-
-    color_mask_pixels = color_mask.load()
-    transparent_mask_pixels = transparent_mask.load()
-    # Get all unique colors in the image
-    # unique_colors = set()
-    # for y in range(image.size[1]):
-    #     for x in range(image.size[0]):
-    #         unique_colors.add(pixels[x, y])
-    # unique_colors = unique_colors
-    # Iterate through each pixel
-    for y in range(image.size[1]):
-        for x in range(image.size[0]):
-            r, g, b, a = pixels[x, y]
-
-            # Check for the target color
-            color_mask_pixels[x, y] = 1 if (r, g, b) == CAR_RGB else 0
-
-            # Check for transparency
-            transparent_mask_pixels[x, y] = 0 if a == 0 else 1
-
-    return color_mask, transparent_mask
-
-
-def create_car_masks(input_dir, color_mask_dir, valid_mask_dir):
+def create_masks(input_dir, output_dirs=[], layer_nums=[]):
     # Process all images in the input directory
-    for filename in tqdm(os.listdir(input_dir), desc="Creating Car Masks"):
-        if filename.lower().endswith((".png")):
-            image_path = os.path.join(input_dir, filename)
-
-            # Create the binary masks
-            color_mask, transparent_mask = binary_mask_helper(image_path)
-
-            # Save the masks
-            color_mask.save(
-                os.path.join(color_mask_dir, f"{os.path.splitext(filename)[0]}.png")
-            )
-            transparent_mask.save(
-                os.path.join(valid_mask_dir, f"{os.path.splitext(filename)[0]}.png")
-            )
+    for filename in tqdm(os.listdir(input_dir), desc=f"Creating Masks"):
+        if filename.lower().endswith((".npy")):
+            data_path = os.path.join(input_dir, filename)
+            original_data = np.load(data_path)
+            # Create the masks
+            for out_dir, layer_num in zip(output_dirs, layer_nums):
+                mask = original_data[:,:,layer_num]
+                if layer_num == 0:
+                    mask = np.logical_not(mask, mask) # Invert for valid mask
+                # Save the mask
+                np.save(os.path.join(out_dir, filename), mask)
 
 
 def process_lidar_to_bev(input_folder, output_folder):
@@ -124,3 +90,58 @@ def class_to_num_grouping(json_file, preferred_clustering):
             
     
     return class_to_num_mapping
+
+
+def load_color_array(file_path):
+    """Load segmentation ID to RGB mapping from a file."""
+    mapping = {}
+    with open(file_path, "r") as f:
+        for idx, line in enumerate(f):
+            rgb_values = tuple(
+                map(int, line.strip().split(","))
+            )  # Convert to (R, G, B) tuple
+            mapping[idx] = rgb_values  # Store in dictionary
+
+    color_array = np.array(
+        [mapping[i] for i in range(len(mapping))], dtype=np.uint8
+    )
+    return color_array
+
+def create_binned_semantics(input_dir, output_dir):
+    color_array = load_color_array(SEG_RGB)
+    color_array = np.hstack((color_array, np.full(color_array.shape[0], 255).reshape(-1, 1)))
+    dictionary = {tuple(color_array[i]): i for i in range(len(color_array))}
+
+    # Process each .npy file in the input directory
+    for file_name in tqdm(os.listdir(input_dir), desc="Creating Binned Semantic Maps"):
+        if file_name.endswith(".png"):
+            # Load the elevation data
+            file_path = os.path.join(input_dir, file_name)
+
+            image = Image.open(file_path).convert("RGBA")
+            pixels = image.load()
+
+            class_image = np.zeros((image.size[1], image.size[0]), dtype=np.uint8)
+
+            for y in range(image.size[1]):
+                for x in range(image.size[0]):
+                    class_image[y,x] = dictionary.get(tuple(pixels[x, y]), 0)
+
+
+            # one hot encode blank_image
+            one_hot_encoded = np.eye(np.max(class_image) + 1, dtype=np.uint8)[class_image]
+
+            # Visualize with a subplot for each layer
+            # import matplotlib.pyplot as plt
+            # fig, axs = plt.subplots(1, np.max(class_image) + 1, figsize=(15, 5))
+            # for i in range(np.max(class_image) + 1):
+            #     axs[i].imshow(one_hot_encoded[:,:,i], cmap='gray')
+            #     axs[i].axis('off')
+            # plt.tight_layout()
+            # plt.show()
+
+
+
+            # Save the one-hot encoded data
+            output_file_path = os.path.join(output_dir, file_name.replace(".png", ".npy"))
+            np.save(output_file_path, one_hot_encoded)

@@ -7,4 +7,4 @@ NUM_Z_BINS = 10
 MIN_ELEV_TUNING_FACTOR = 5
 DESIRED_CEILING_GAP = 2.0
 
-CAR_RGB = (85, 230, 119)
+SEG_RGB = "/Users/ryanslocum/Documents/current_courses/PLR/repos/misc/files_from_manthan/seg_rgbs.txt"

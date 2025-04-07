@@ -3,10 +3,11 @@ name = "python-scripts"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "line-profiler>=4.2.0",
     "matplotlib>=3.10.1",
-    "numpy>=2.2.4",
+    "numpy",
     "open3d>=0.19.0",
     "opencv-python>=4.11.0.86",
+    "tartanair>=1.0.4",
+    "torchvision>=0.21.0",
     "tqdm>=4.67.1",
 ]

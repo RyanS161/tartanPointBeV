@@ -8,32 +8,17 @@ import json
 from scipy.spatial.transform import Rotation
 from os.path import join
 from tqdm import tqdm
+from configs import SEG_RGB
+from train_data_tools import load_color_array
 
 VOXEL_SIZE = 0.1  # Voxel size for downsampling
 FRAME_SUBSAMPLE = 10  # Subsampling factor for frames
-seg_rgb = "/Users/ryanslocum/Documents/current_courses/PLR/repos/misc/files_from_manthan/seg_rgbs.txt"
-
-
-def load_color_array(file_path):
-    """Load segmentation ID to RGB mapping from a file."""
-    mapping = {}
-    with open(file_path, "r") as f:
-        for idx, line in enumerate(f):
-            rgb_values = tuple(
-                map(int, line.strip().split(","))
-            )  # Convert to (R, G, B) tuple
-            mapping[idx] = rgb_values  # Store in dictionary
-
-    color_array = np.array(
-        [mapping[i] for i in range(len(mapping))], dtype=np.uint8
-    )
-    return color_array
 
 
 def collapsed_color_mapping(collapsed_groups):
-    original_color_array = load_color_array(seg_rgb)
+    original_color_array = load_color_array(SEG_RGB)
 
-    seg_colors = np.loadtxt("/Users/ryanslocum/Documents/current_courses/PLR/repos/misc/files_from_manthan/seg_rgbs.txt", delimiter=',', dtype=np.uint8)
+    seg_colors = np.loadtxt(SEG_RGB, delimiter=',', dtype=np.uint8)
     segcolor_to_segid = {seg_colors[k, 2]: k for k in range(1, len(seg_colors)-1)}
     segid_to_segcolor = {k: seg_colors[k, 2] for k in range(1, len(seg_colors)-1)}
 
@@ -146,7 +131,7 @@ class LocalMappingRegister:
     def __init__(self, data_dir, collapsed_semantic_classes=None):
         self.data_dir = data_dir
         self.collapsed_semantic_classes = collapsed_semantic_classes
-        self.color_array = load_color_array(seg_rgb)
+        self.color_array = load_color_array(SEG_RGB)
         if self.collapsed_semantic_classes is not None:
             self.color_array = collapsed_color_mapping(self.collapsed_semantic_classes)
 
