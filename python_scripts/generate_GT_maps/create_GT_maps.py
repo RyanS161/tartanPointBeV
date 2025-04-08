@@ -159,6 +159,9 @@ class GroundTruthMapGenerator:
                 pillar_points = points[grid_to_point_indices[i]]
                 if len(pillar_points) > MIN_ELEV_TUNING_FACTOR:
                     x, y = unique_grid_coords[i]
+                    if x < 0 or x >= IMAGE_SIZE_PX or y < 0 or y >= IMAGE_SIZE_PX:
+                        print(f"Skipping out-of-bounds grid cell: ({x}, {y})")
+                        continue
                     pillar_colors = colors[grid_to_point_indices[i]]
                     sorted_indices = np.argsort(pillar_points[:, 2])
                     sorted_z_values = pillar_points[sorted_indices, 2]
