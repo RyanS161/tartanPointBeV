@@ -11,6 +11,8 @@ from einops import rearrange, repeat
 from torch import nn
 
 from pointbev.utils.debug import debug_hook
+import matplotlib.pyplot as plt # TODO only temporary for plotting
+import numpy as np # TODO only temporary for plotting
 
 
 class CamProjector(nn.Module):
@@ -40,7 +42,7 @@ class CamProjector(nn.Module):
         self.X_cam, self.Y_cam, self.Z_cam = Y, Z, X
 
     # Voxel to cams
-    def from_voxel_ref_to_cams(self, vox_coords, rots, trans, bev_aug, egoTin_to_seq):
+    def from_voxel_ref_to_cams(self, vox_coords, rots, trans, bev_aug, egoTin_to_seq, intrins):
         """Project points from voxel reference to camera reference.
         Args:
             - rots, trans: map points from cameras to ego. In Nuscenes, extrinsics
@@ -50,8 +52,23 @@ class CamProjector(nn.Module):
             - Voxel camera coordinates: coordinates of the voxels in the camera reference frame.
             - Voxel coordinates: coordinates of the voxels in the ego (sequence and augmentation) reference frame.
         """
+
+        print("vox_coords min:", vox_coords.min().item(), 
+              "max:", vox_coords.max().item(), 
+              "mean:", vox_coords.mean().item())
+        
+        print("vox_coords min:", vox_coords.min().item(), 
+              "max:", vox_coords.max().item(), 
+              "mean:", vox_coords.mean().item())
+        
+        self.plot_3d_voxels(vox_coords, rots, trans, intrins)
+
+        print("START min/mean/max:", vox_coords.min().item(), vox_coords.mean().item(), vox_coords.max().item())
         vox_coords = self.from_spatial_to_seqaug(vox_coords, bev_aug, egoTin_to_seq)
+        print("AFTER seqaug min/mean/max:", vox_coords.min().item(), ...)
         voxcam_coords = self.from_spatial_to_cams(vox_coords, rots, trans)
+        print("AFTER to_cams min/mean/max:", vox_coords.min().item(), ...)
+        
         return voxcam_coords, vox_coords
 
     def from_spatial_to_seqaug(self, vox_coords, bev_aug, egoTin_to_seq):
@@ -100,6 +117,11 @@ class CamProjector(nn.Module):
         vox_coords = torch.cat([vox_coords, torch.ones_like(vox_coords[:, :1])], dim=1)
         vox_coords = repeat(vox_coords, "bt i Npts -> (bt n) i Npts", n=n, i=4)
         voxcam_coords = torch.bmm(homog_mat, vox_coords)[:, :3]
+
+        # Inside from_spatial_to_cams
+        print(f"homog_mat[0]: {homog_mat[0]}")
+
+
         return rearrange(voxcam_coords, "(bt n) i Npts -> bt n i Npts", bt=bt, n=n, i=3)
 
     # Cams to pixels
@@ -264,6 +286,9 @@ class CamProjector(nn.Module):
         # Set axis range.
         self._set_axis(vox_coords)
 
+        print("START min/mean/max:", vox_coords.min().item(), vox_coords.mean().item(), vox_coords.max().item())
+
+
         # Ego to cams.
         voxcam_coords, vox_coords = self.from_voxel_ref_to_cams(
             vox_coords,
@@ -271,8 +296,11 @@ class CamProjector(nn.Module):
             trans,
             bev_aug,
             egoTin_to_seq,
+            intrins
         )
         z_valid = self.valid_points_in_cam(voxcam_coords)
+        print("START min/mean/max:", vox_coords.min().item(), vox_coords.mean().item(), vox_coords.max().item())
+
 
         # Cams to pixels.
         voxcam_coords = self.from_cameras_to_pixels(voxcam_coords, intrins)
@@ -296,6 +324,12 @@ class CamProjector(nn.Module):
         voxcam_coords, vox_valid, vox_coords = self.arange_voxels(
             voxcam_coords, vox_valid, vox_coords, (b, t, n)
         )
+        print("START min/mean/max:", vox_coords.min().item(), vox_coords.mean().item(), vox_coords.max().item())
+
+        self.visualize_valid_voxels_3d(vox_valid, vox_coords, rots, trans)
+
+        self.visualize_camera_coverage_bev_improved(vox_valid)
+            
         return dict(
             {
                 "voxcam_coords": voxcam_coords,
@@ -303,3 +337,211 @@ class CamProjector(nn.Module):
                 "vox_coords": vox_coords,
             }
         )
+    
+
+
+    def plot_3d_voxels(self, vox_coords, rots, trans, intrins):
+        axis_len = 5.0
+        frustum_len = 1.5
+
+        # voxel to ego frame
+        with torch.no_grad():
+            coords_np = vox_coords[0].cpu().numpy()
+            coords_np = coords_np.reshape(3, -1)
+            x, y, z = coords_np[0], coords_np[1], coords_np[2]
+
+            fig = plt.figure(figsize=(10, 10))
+            ax = fig.add_subplot(projection="3d")
+            ax.scatter(x[::1], y[::1], z[::1], s=3, alpha=0.5, label="Voxel centers")
+
+        rots_np = rots[0].cpu().numpy()               # [6, 3, 3]
+        trans_np = trans[0, :, :, 0].cpu().numpy()    # [6, 3]
+
+        for cam_idx in range(rots_np.shape[0]):
+            R = rots_np[cam_idx]
+            t = trans_np[cam_idx]
+
+            print(f"Camera {cam_idx} position: {t}, R shape: {R.shape}")
+
+            x_axis = R @ np.array([1, 0, 0])  # right
+            y_axis = R @ np.array([0, 1, 0])  # down
+            z_axis = R @ np.array([0, 0, 1])  # forward
+
+            ax.scatter(t[0], t[1], t[2], color='black', marker='o')
+            ax.text(t[0], t[1], t[2], f"Cam {cam_idx}", color='black')
+
+            ax.quiver(t[0], t[1], t[2], z_axis[0], z_axis[1], z_axis[2],
+                    length=axis_len, color='red', label='Z axis' if cam_idx == 0 else None)
+            ax.quiver(t[0], t[1], t[2], x_axis[0], x_axis[1], x_axis[2],
+                    length=axis_len, color='green', label='X axis' if cam_idx == 0 else None)
+            ax.quiver(t[0], t[1], t[2], y_axis[0], y_axis[1], y_axis[2],
+                    length=axis_len, color='blue', label='Y axis' if cam_idx == 0 else None)
+
+            fx = intrins[0, cam_idx, 0, 0].item()
+            fy = intrins[0, cam_idx, 1, 1].item()
+            w = intrins[0, cam_idx, 0, 2].item() * 2
+            h = intrins[0, cam_idx, 1, 2].item() * 2
+            fov_x = np.rad2deg(2 * np.arctan2(w, 2 * fx))
+            fov_y = np.rad2deg(2 * np.arctan2(h, 2 * fy))
+
+            cx = np.tan(fov_x / 2) * frustum_len
+            cy = np.tan(fov_y / 2) * frustum_len
+
+            frustum_points_cam = np.array([
+                [0, 0, 0],                # camera center
+                [-cx, -cy, frustum_len],  # top-left
+                [ cx, -cy, frustum_len],  # top-right
+                [ cx,  cy, frustum_len],  # bottom-right
+                [-cx,  cy, frustum_len],  # bottom-left
+            ])
+
+            frustum_points_ego = (R @ frustum_points_cam.T).T + t
+
+            # lines from cam center to corners
+            for i in range(1, 5):
+                ax.plot(
+                    [frustum_points_ego[0, 0], frustum_points_ego[i, 0]],
+                    [frustum_points_ego[0, 1], frustum_points_ego[i, 1]],
+                    [frustum_points_ego[0, 2], frustum_points_ego[i, 2]],
+                    color='orange', linestyle='--', linewidth=1.0
+                )
+
+            # frustum base square
+            for i in range(1, 5):
+                j = 1 if i == 4 else i + 1
+                ax.plot(
+                    [frustum_points_ego[i, 0], frustum_points_ego[j, 0]],
+                    [frustum_points_ego[i, 1], frustum_points_ego[j, 1]],
+                    [frustum_points_ego[i, 2], frustum_points_ego[j, 2]],
+                    color='orange', linestyle='-', linewidth=1.0
+                )
+
+        ax.set_xlabel("X (Forward)")
+        ax.set_ylabel("Y (Left)")
+        ax.set_zlabel("Z (Up)")
+        ax.set_title("Voxel Grid + Camera Positions in Ego Frame")
+        ax.legend()
+        plt.tight_layout()
+        plt.show()
+
+    def visualize_valid_voxels_3d(self, vox_valid, vox_coords, rots, trans):
+        """3D voxels colored by their validity for each camera"""
+
+        # vox_valid = [B=1, T=1, N=6, Z=2500, Y=8, X=1, i=1] whereas i stand for the fact that we have binary data. For vox_coords the i=3 spatial for the 3 dimensions
+        vox_valid_np = vox_valid[0, 0].squeeze(-1).cpu().numpy()  # [6=cams, 2500=xy ground plane (50x50), 8=z up, 1=singleton that can be squeezed)] however they label it z=2500, y=8, x=1 for some arbitrary reason
+        vox_coords_np = vox_coords[0, 0].cpu().numpy()  # (2500, 8, 1, 3)
+        
+        rots_np = rots[0].cpu().numpy()               # [6, 3, 3]
+        trans_np = trans[0, :, :, 0].cpu().numpy()    # [6, 3]
+        
+        Z, Y, X = vox_coords_np.shape[:-1] # Z=2500, Y=8, X=1
+        
+        for cam_idx in [0,1,2,3,4,5]:
+            fig = plt.figure(figsize=(12, 10))
+            ax = fig.add_subplot(111, projection='3d')
+            
+            valid_mask = vox_valid_np[cam_idx]  # (Z, Y, X)
+            
+            # for performance
+            sample_rate = 0.2  # 20% of voxels
+            random_mask = np.random.rand(Z, Y, X) < sample_rate
+            
+            valid_points = valid_mask & random_mask
+            invalid_points = (~valid_mask) & random_mask
+            
+            valid_coords = vox_coords_np[valid_points]
+            invalid_coords = vox_coords_np[invalid_points]
+            
+            # valid voxels in green, invalid in red
+            if len(valid_coords) > 0:
+                ax.scatter(valid_coords[:, 0], valid_coords[:, 1], valid_coords[:, 2], 
+                        c='green', s=10, alpha=0.5, label='Valid voxels')
+            if len(invalid_coords) > 0:
+                ax.scatter(invalid_coords[:, 0], invalid_coords[:, 1], invalid_coords[:, 2], 
+                        c='red', s=10, alpha=0.1, label='Invalid voxels')
+            
+            t = trans_np[cam_idx]
+            R = rots_np[cam_idx]
+            z_axis = R @ np.array([0, 0, 1])  # forward direction
+            
+            ax.scatter([t[0]], [t[1]], [t[2]], color='black', s=100, marker='o')
+            ax.quiver(t[0], t[1], t[2], z_axis[0]*5, z_axis[1]*5, z_axis[2]*5,
+                    color='blue', arrow_length_ratio=0.2, linewidth=2)
+
+            ax.set_xlabel('X (forward)')
+            ax.set_ylabel('Y (left)')
+            ax.set_zlabel('Z (up)')
+            ax.set_title(f'Camera {cam_idx} Valid Voxels (green) vs Invalid Voxels (red)')
+            ax.legend()
+            
+            plt.tight_layout()
+
+    def visualize_camera_coverage_bev_improved(self, vox_valid):
+        """BEV coverage for sparse voxel points as a grid"""
+
+        # vox_valid = [B=1, T=1, N=6, Z=2500, Y=8, X=1, i=1] whereas i stand for the fact that we have binary data. For vox_coords the i=3 spatial for the 3 dimensions
+        vox_valid_np = vox_valid[0, 0].squeeze(-1).cpu().numpy()  # [6=cams, 2500=xy ground plane (50x50), 8=z up, 1=singleton that can be squeezed)] however they label it z=2500, y=8, x=1 for some arbitrary reason
+        vox_valid_np = vox_valid_np.squeeze(-1) # [6, 2500, 8]. squeezing out the x which is only a placeholder since the xy plane for the bev is stored in z = 50x50
+
+        vox_valid_grid = vox_valid_np.reshape(6, 50, 50, 8) # reshaping 2500 into 50 x 50
+        print(f"After reshape: {vox_valid_grid.shape}")
+
+        def visualize_height_slices(vox_valid_grid, cam_idx=0):
+            """
+            Plot each height slice individually for a single camera in a grid of subplots.
+            Args:
+            vox_valid_grid: shape (n_cams, X, Y, Z).
+            cam_idx: which camera index to plot.
+            """
+            
+            n_cams, X, Y, Z = vox_valid_grid.shape
+            fig, axes = plt.subplots(2, 4, figsize=(16, 8))  # 8 slices => 2 rows x 4 cols
+            
+            for z in range(Z):
+                ax = axes[z // 4, z % 4]
+                # shape (X, Y) for this slice
+                slice2d = vox_valid_grid[cam_idx, :, :, z]
+                
+                im = ax.imshow(slice2d, cmap='viridis')
+                ax.set_title(f"Camera {cam_idx}, height slice {z}")
+                fig.colorbar(im, ax=ax, fraction=0.045, pad=0.04)
+
+            plt.tight_layout()
+            plt.show()
+
+
+        visualize_height_slices(vox_valid_grid, cam_idx=0)
+
+        plt.figure(figsize=(15, 10))
+        cam_names = ['Front', 'Front Right', 'Right', 'Back', 'Left', 'Front Left']
+
+        for cam_idx in range(vox_valid_grid.shape[0]):
+            plt.subplot(2, 3, cam_idx+1)
+            
+            # Sum over height dimension (the last axis => -1)
+            height_visibility = vox_valid_grid[cam_idx].sum(axis=-1)  # resulting shape: (50, 50)
+
+            print("height_visibility shape =", height_visibility.shape)
+            nonzero_coords = np.argwhere(height_visibility > 0)
+            print("Number of nonzero cells =", len(nonzero_coords))
+
+            unique_vals = np.unique(height_visibility)
+            print("Unique values in height_visibility:", unique_vals)
+
+            # If you want to see the bounding box of nonzero area:
+            if len(nonzero_coords) > 0:
+                min_x, min_y = nonzero_coords.min(axis=0)
+                max_x, max_y = nonzero_coords.max(axis=0)
+                print(f"Nonzero region spans from ({min_x},{min_y}) to ({max_x},{max_y})")
+
+
+            plt.imshow(height_visibility, cmap='viridis')
+
+            plt.title(f"Camera {cam_idx}: {cam_names[cam_idx]}")
+            plt.colorbar(label="Height levels visible")
+            
+            # plt.plot(0, 0, 'rx', markersize=10)  # Ego
+            plt.grid(color='white', linestyle='--', linewidth=0.5, alpha=0.5)
+        
+        plt.tight_layout()
+        plt.show()
