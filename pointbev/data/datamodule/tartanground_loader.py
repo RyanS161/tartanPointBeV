@@ -71,7 +71,7 @@ class TartangroundDatamodule(pl.LightningDataModule):
         data.create_image_dataset(self.envs,
                                   modality=['image'],
                                   camera_name=list(self.img_params.cams))
-        wrapped_dataset = IndexWrapper(data.dataset) # Wrap the dataset to add indices
+        wrapped_dataset = IndexWrapper(data.dataset) # adding indices
 
         self.train_data = wrapped_dataset  # Use all data for training
         val_len = min(250, len(wrapped_dataset)//5)  # Use ~20% or max 250 samples
@@ -79,13 +79,12 @@ class TartangroundDatamodule(pl.LightningDataModule):
         print(f"Training set size: {len(self.train_data)}, Validation set size: {len(self.val_data)}")
 
 
-        # TODO could probably achieve that this is integrated into the data.dataset, but then need to adapt the 'create_image_dataset' func
         self.camera_params = {}
         env = self.envs[0]  # Assuming all cameras share same params across environments
         difficulty = "Data_easy"  # hardcoded for now. Can parameterize in tartanground.yaml later
         traj = "P0006"  # hardcoded for now. Can parameterize in tartanground.yaml later
 
-        for cam in self.img_params.cams: # iterates over lcam_front, front_right, front_left, back_right, back_left back            
+        for cam in self.img_params.cams:            
             param_file = os.path.join(
                 self.dataroot, 
                 env, 
@@ -187,19 +186,18 @@ class TartangroundDatamodule(pl.LightningDataModule):
     
     expected batch structure:
     {
-    'imgs': {cam_name: tensor(B, 3, H, W)},   # camera → batch of images
-    'rots': tensor(B, N, 3, 3),     seems to be the static transformation of the camera to base frame
-    'trans': tensor(B, N, 3),       seems to be the static transformation of the camera to the base frame
-    'intrins': tensor(B, N, 3, 3),
-    'bev_aug': tensor(B, 2, 3),
-    'egoTin_to_seq': tensor(B, 4, 4)
+    'imgs': {cam_name: tensor(B, T, 3, H, W)},   # camera → batch of images
+    'rots': tensor(B, T, N, 3, 3),     static transformation of the camera to base frame
+    'trans': tensor(B, T, N, 3, 1),       static transformation of the camera to the base frame
+    'intrins': tensor(B, T, N, 3, 3),
+    'bev_aug': tensor(B, T, 4, 4),
+    'egoTin_to_seq': tensor(B, T, 4, 4)
     }  
     """
     def collate_fn(self, batch):
         """
         Convert list of samples → batch dict that matches PointBEV forward() inputs.
         """
-        # print("batch frame indices:", [sample["frame_idx"] for sample in batch])
         B = len(batch) # batch size
         N = len(self.img_params.cams)  # number of cameras
         egoTin_to_seq_list = [] # egoTin_to_seq is not camera specific but for base_frame (front camera)
@@ -213,18 +211,14 @@ class TartangroundDatamodule(pl.LightningDataModule):
             valid_binimg_file = os.path.join(self.valid_binimg_path, f"{frame_idx:06d}.npy")
 
             if os.path.exists(binimg_file):
-                # binimg_np = np.array(Image.open(binimg_file))
                 binimg_np = np.load(binimg_file)
-                # print(f"{binimg_file} → shape={binimg_np.shape}, dtype={binimg_np.dtype}, unique={np.unique(binimg_np)}")
                 binimg_ = torch.from_numpy(binimg_np).float().unsqueeze(0) # / 255.0
             else:
                 print(f"{binimg_file} not found.")
                 binimg_ = torch.zeros((1, 100, 100), dtype=torch.float32)
 
             if os.path.exists(valid_binimg_file):
-                # valid_np = np.array(Image.open(valid_binimg_file))
                 valid_np = np.load(valid_binimg_file)
-                # print(f"{valid_binimg_file} → shape={valid_np.shape}, dtype={valid_np.dtype}, unique={np.unique(valid_np)}")
                 valid_binimg_ = torch.from_numpy(valid_np).bool().unsqueeze(0)
             else:
                 valid_binimg_ = torch.zeros((1, 100, 100), dtype=torch.bool)
@@ -254,18 +248,26 @@ class TartangroundDatamodule(pl.LightningDataModule):
             cam_rots   = []
 
             for i, sample in enumerate(batch):
-                # The dictionary for this sample, for this camera
-                frame_idx = sample["frame_idx"]  # again so you know which sample
+                frame_idx = sample["frame_idx"]
 
                 img = sample[cam]['image_0']
                 img_pil = Image.fromarray(img)
                 img_tensor = NORMALIZE_IMG(img_pil)
-                # img_tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0 # TODO IS NORMALIZING NEEDED SINCE THEY HAVE SOME PARAM CALLED 'normalize_img = True'
-                # If you want smaller size:
+
+                # TODO resizing to 128x128 is only temporary to save vram on the local gpg
+                # TODO this needs to be done for the images and also the intrinsics!
                 img_tensor = TF.resize(img_tensor, [128, 128], antialias=True)
                 cam_imgs.append(img_tensor)
 
                 intr = torch.tensor(self.camera_params[cam]['intrinsics'], dtype=torch.float32)
+                scale_factor = 128.0 / 640.0
+
+                # Scale fx, fy, cx, cy
+                intr[0, 0] *= scale_factor
+                intr[1, 1] *= scale_factor
+                intr[0, 2] *= scale_factor 
+                intr[1, 2] *= scale_factor
+
                 cam_intr.append(intr)
 
                 R_body_camera = torch.tensor(self.camera_params[cam]['R_body_camera'], dtype=torch.float32)
@@ -301,6 +303,8 @@ class TartangroundDatamodule(pl.LightningDataModule):
         egoTin_to_seq = torch.stack(egoTin_to_seq_list, dim=0)   # [B, T=1, 4, 4]
         # egoTin_to_seq = egoTin_to_seq.unsqueeze(1)               # if T=1
 
+        egoTin_to_seq_dummy = torch.eye(4).expand(B, 1, 4, 4).clone() # dummy for now to verify the other stuff works
+
         bev_aug = torch.eye(4).expand(B, 1, 4, 4).clone() # no augmentation for now
 
         return {
@@ -310,110 +314,11 @@ class TartangroundDatamodule(pl.LightningDataModule):
             "trans":    trans,
             "intrins":  intrins,
             "bev_aug":  bev_aug,
-            "egoTin_to_seq":   egoTin_to_seq,
+            "egoTin_to_seq":   egoTin_to_seq_dummy,
             "binimg":          binimg,
             "valid_binimg":    valid_binimg,
         }
 
-
-        # for cam in self.img_params.cams:
-        #     cam_imgs = []
-        #     cam_trans = []
-        #     cam_rots = []
-
-        #     # TODO the i won't be correct anymore if the batches are shuffled sometime. Identifyer needs to be encoded in the batches itself
-        #     for i, sample in enumerate(batch):
-        #         frame_idx = i
-        #         img = sample[cam]['image_0']
-        #         img_tensor = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
-        #         img_tensor = TF.resize(img_tensor, [128, 128], antialias=True)  # or [256, 256] if you prefer    # TODO only temporary to save vram on the local gpu
-        #         cam_imgs.append(img_tensor)
-
-        #         # position = torch.tensor(self.camera_params[cam]['T_world_camera'][frame_idx][:3], dtype=torch.float32)
-        #         position = torch.zeros((3, 1), dtype=torch.float32) # Assuming the l_cam is the base frame
-        #         cam_trans.append(position)
-
-        #         # TODO function is assuming order [qx, q,y, qz, qw]. Verify that this is actually the case in the txt's
-        #         # quat_rotation_world_camera = self.camera_params[cam]['T_world_camera'][frame_idx][3:7]
-        #         # matrix_rotation_world_camera = Rotation.from_quat(quat_rotation_world_camera).as_matrix()
-        #         # matrix_rotation_world_camera = torch.from_numpy(matrix_rotation_world_camera).float()
-        #         # TODO not sure if we need to transform frame from camera frame to body frame to world frame
-        #         # R_body_camera = torch.tensor(self.camera_params[cam]['R_body_camera'], dtype=torch.float32) # converting R_body_camera to tensor
-        #         # combined_rotation_matrix = torch.matmul(matrix_rotation_world_camera, R_body_camera)
-        #         R_body_camera = torch.tensor(self.camera_params[cam]['R_body_camera'], dtype=torch.float32) # converting R_body_camera to tensor
-        #         cam_rots.append(R_body_camera)
-
-        #         if cam == 'lcam_front':
-        #             egoTin_to_seq = TartangroundDatamodule.poses_to_egoTin_to_seq(self.camera_params[cam]['T_world_camera'], [frame_idx]) # (T=1, 4, 4)
-        #             egoTin_to_seq_list.append(egoTin_to_seq)
-
-        #             binimg_file = os.path.join(self.binimg_path, f"{frame_idx:06d}.png")
-        #             valid_binimg_file = os.path.join(self.valid_binimg_path, f"{frame_idx:06d}.png")
-
-        #             # Load binary mask if exists
-        #             if os.path.exists(binimg_file):
-        #                 img_np = np.array(Image.open(binimg_file))
-        #                 binimg = torch.from_numpy(img_np).float().unsqueeze(0)
-        #             else:
-        #                 binimg = torch.zeros((1, 200, 200), dtype=torch.float32)
-
-
-        #             # Load valid mask if exists, otherwise use all ones or zeros based on your needs
-        #             if os.path.exists(valid_binimg_file):
-        #                 valid_binimg = torch.from_numpy(
-        #                     np.array(Image.open(valid_binimg_file))
-        #                 ).bool().unsqueeze(0)
-        #             else:
-        #                 valid_binimg = torch.zeros((1, 200, 200), dtype=torch.float32)
-            
-
-        #             binimg = TF.resize(binimg, [200, 200], antialias=True)
-        #             valid_binimg = TF.resize(valid_binimg.float(), [200, 200], antialias=True).bool()
-        #             binimgs.append(binimg)
-        #             valid_binimgs.append(valid_binimg)
-        
-        
-
-        #     imgs_list.append(torch.stack(cam_imgs))  # B x 3 x H x W
-
-        #     intrins_tensor = torch.tensor(self.camera_params[cam]['intrinsics'], 
-        #                                   dtype=torch.float32
-        #                                   )
-        #     # Repeat for batch size
-        #     intrins_list.append(intrins_tensor.unsqueeze(0).repeat(B, 1, 1))
-        #     trans_list.append(torch.stack(cam_trans))  # [B, 3, 1]
-        #     rots_list.append(torch.stack(cam_rots))  # [B, 3, 3]
-
-        # imgs = torch.stack(imgs_list, dim=0).permute(1, 0, 2, 3, 4).unsqueeze(1)  # [B, T=1, N, C=3, H, W]
-        # intrins = torch.stack(intrins_list, dim=1).unsqueeze(1)  # [B, T=1, N, 3, 3]
-        # trans = torch.stack(trans_list, dim=1).unsqueeze(1)  # [B, T=1, N, 3, 1]
-        # rots = torch.stack(rots_list, dim=1).unsqueeze(1)  # [B, T=1, N, 3, 3]
-        # egoTin_to_seq = torch.stack(egoTin_to_seq_list, dim=0)  # (B, T=1, 4, 4)
-
-
-        # bev_aug = torch.stack([torch.eye(4).clone() for _ in range(B)]).unsqueeze(1)  # (B, T=1, 4, 4) no aug
-        # # egoTin_to_seq = torch.stack([torch.eye(4).clone() for _ in range(B)]).unsqueeze(1)  # (B, T=1, 4, 4) for T=1 we consider only current pose
-
-        # # binimg = torch.zeros(B, 1, 200, 200).unsqueeze(1)  # (B, T=1, H, W) no binimg for now. 200 is hardcoded as its the size of the inputs
-        # # valid_binimg = torch.zeros(B, 1, 200, 200).unsqueeze(1)  # (B, T=1, H, W) no binimg for now. 200 is hardcoded as its the size of the inputs
-        # # binimg should be float for BCE loss
-        # # binimg = torch.zeros(B, 1, 200, 200, dtype=torch.float32).unsqueeze(1)
-        # # valid_binimg = torch.zeros(B, 1, 200, 200, dtype=torch.bool).unsqueeze(1)
-        # binimg = torch.stack(binimgs).unsqueeze(1)  # [B=1, T=1, C=1, H, W]
-        # valid_binimg = torch.stack(valid_binimgs).unsqueeze(1)  # [B=1, T=1, C=1, H, W]
-    
-
-        # return {
-        #     "imgs": imgs,
-        #     "rots": rots,
-        #     "trans": trans,
-        #     "intrins": intrins,
-        #     "bev_aug": bev_aug,
-        #     "egoTin_to_seq": egoTin_to_seq,
-        #     # task specific labels:
-        #     "binimg": binimg,
-        #     "valid_binimg": valid_binimg
-        # }
     
     @staticmethod
     def poses_to_egoTin_to_seq(pose_entries, frame_indices):
@@ -452,11 +357,9 @@ class TartangroundDatamodule(pl.LightningDataModule):
         return T
     
     def on_after_batch_transfer(self, batch, dataloader_idx):
-        # Convert binimg to float if it exists (needed for loss calculation)
         if "binimg" in batch.keys():
             batch["binimg"] = batch["binimg"].float()
         
-        # Add egoTout_to_seq tensor which is expected by the inference code
         if "egoTin_to_seq" in batch and "egoTout_to_seq" not in batch:
             batch["egoTout_to_seq"] = batch["egoTin_to_seq"].clone()
         
@@ -476,70 +379,3 @@ class IndexWrapper(torch.utils.data.Dataset):
         sample = sample.copy()
         sample["frame_idx"] = idx
         return sample
-
-
-    
-    # def on_after_batch_transfer(self, batch, dataloader_idx):
-    #     for key in ["binimg", "binimg_aug"]:
-    #         if key in batch.keys():
-    #             # Some outputs are stored as int, but we need them as float for the loss.
-    #             batch[key] = batch[key].float()
-
-    #     # Object detection activated
-    #     if self.keep_input_detection:
-    #         batch["classes"] = [[elem for elem in b] for b in batch["classes"]]
-    #         batch["classes_aug"] = [[elem for elem in b] for b in batch["classes_aug"]]
-
-    #         batch["bbox_attr"] = [[elem for elem in b] for b in batch["bbox_attr"]]
-    #         batch["bbox_attr_aug"] = [
-    #             [elem for elem in b] for b in batch["bbox_attr_aug"]
-    #         ]
-
-    #         batch["centers"] = [[elem for elem in b] for b in batch["centers"]]
-    #         batch["centers_aug"] = [[elem for elem in b] for b in batch["centers_aug"]]
-
-    #     # HDMaps
-    #     if self.keep_input_hdmap:
-    #         batch["hdmap"] = batch["hdmap"].float()
-
-    #     if self.keep_input_offsets_map:
-    #         batch["offsets_map_dist"] = torch.sqrt(
-    #             batch["offsets_map"][:, :, 0] ** 2 + batch["offsets_map"][:, :, 1] ** 2
-    #         ).unsqueeze(2)
-    #         batch["offsets_map_dist_aug"] = torch.sqrt(
-    #             batch["offsets_map_aug"][:, :, 0] ** 2
-    #             + batch["offsets_map_aug"][:, :, 1] ** 2
-    #         ).unsqueeze(2)
-
-    #     return batch
-
-
-# def worker_rnd_init(x):
-#     np.random.seed(13 + x)
-
-
-# def collate_batch(batch: List[Tensor]):
-#     key_as_list_of_tensor = [
-#         "classes",
-#         "classes_aug",
-#         "bbox_attr",
-#         "bbox_attr_aug",
-#         "centers",
-#         "centers_aug",
-#         "bboxes",
-#         "bboxes_aug",
-#         "bbox_egopose",
-#         "bbox_egopose_aug",
-#         "tokens",
-#     ]
-#     keys = batch[0].keys()
-#     out_dict = {
-#         k: torch.stack([b[k] for b in batch])
-#         for k in keys
-#         if k not in key_as_list_of_tensor
-#     }
-
-#     for k in key_as_list_of_tensor:
-#         if k in keys:
-#             out_dict.update({k: [b[k] for b in batch]})
-#     return out_dict

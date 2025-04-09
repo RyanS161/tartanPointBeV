@@ -7,7 +7,7 @@ Reference frame conventions:
 tartanAir front camera (NED):
 z = fw, x = right, y = down
 
-PointBeV base frame (ENU):
+PointBeV base (ego) frame (ENU):
 x = fw, y = left, z = up
 
 PointBeV camera frame (front camera):
@@ -67,7 +67,7 @@ print("All camera poses processed.")
 
 
 
-###### Update static camera transformations ######
+###### Define static camera transformations ######
 
 def R_yaw_matrix(angle):
     R_yaw = np.array([
@@ -76,6 +76,14 @@ def R_yaw_matrix(angle):
         [0,              0,             1]
     ])
     return R_yaw
+
+def R_roll_matrix(angle):
+    R_roll = np.array([
+        [1, 0, 0],
+        [0, np.cos(angle), -np.sin(angle)],
+        [0, np.sin(angle),  np.cos(angle)]
+    ])
+    return R_roll
 
 def clean_matrix(R, tol=1e-10):
     """Round near-zero and near-integer values"""
@@ -87,11 +95,13 @@ camera_extrinsics = {}
 
 # Static transformations from ego frame (NED) to camera frames:
 # Ego X (forward) -> Cam Z (forward), Ego Y (left) -> Cam -X (right), Ego Z (up) -> Cam -Y (down).
-R_front = np.array([
-    [ 0, -1,  0],  # column 0: image of basis [1,0,0]_ego = [0,0,1]_cam (forward ego -> forward cam)
-    [ 0,  0, -1],  # column 1: image of basis [0,1,0]_ego = [-1,0,0]_cam (left ego -> left in image)
-    [ 1,  0,  0]   # column 2: image of basis [0,0,1]_ego = [0,-1,0]_cam (up ego -> down cam)
-])
+# Therefore first a rotation of -90° around Z-axis then -90° around X-axis
+
+R_z = clean_matrix(R_yaw_matrix(np.pi/2))  # +90deg about Z-axis
+R_x = clean_matrix(R_roll_matrix(np.pi/2))  # +90deg about X-axis
+R_ego_to_front_cam = R_x @ R_z
+print(f"R_ego_to_front_cam:\n{R_ego_to_front_cam}")
+
 
 camera_angles = {
     'front': 0,
@@ -106,23 +116,21 @@ camera_extrinsics = {}
 
 for position, angle in camera_angles.items():
     if angle == 0:
-        camera_extrinsics[position] = R_front
+        camera_extrinsics[position] = R_ego_to_front_cam
     else:
         # negative because a camera facing +θ° left in ego frame requires a -θ° rotation of the ego frame into the camera frame
         angle_rad = np.radians(-angle)  
-        R_yaw = np.array([
-            [np.cos(angle_rad), -np.sin(angle_rad), 0],
-            [np.sin(angle_rad),  np.cos(angle_rad), 0],
-            [0,                 0,                1]
-        ])
-        camera_extrinsics[position] = clean_matrix(R_front @ R_yaw)
+        R_yaw = clean_matrix(R_yaw_matrix(angle_rad))  # yaw rotation
+        camera_extrinsics[position] = clean_matrix(R_ego_to_front_cam @ R_yaw)
 
+# ATTENTION: PointBeV actually expects the inverse transformation
+camera_extrinsics = {position: np.linalg.inv(R) for position, R in camera_extrinsics.items()}
 
 cam_position_map = dict(enumerate(['front', 'front_left', 'front_right', 'back_left', 'back_right', 'back']))
 
 for cam_idx, position in cam_position_map.items():
-    file_path = f"{tartanair_poses_basepath}/image_lcam_custom{cam_idx}_pinhole/camera_model_params_lcam_image_custom{cam_idx}_pinhole.json"
-    # file_path = f"{tartanair_poses_basepath}/image_lcam_{cam_position_map[cam_idx]}_pinhole/camera_model_params_image_lcam_{cam_position_map[cam_idx]}_pinhole.json"
+    # file_path = f"{tartanair_poses_basepath}/image_lcam_custom{cam_idx}_pinhole/camera_model_params_lcam_image_custom{cam_idx}_pinhole.json"
+    file_path = f"{tartanair_poses_basepath}/image_lcam_{cam_position_map[cam_idx]}_pinhole/camera_model_params_image_lcam_{cam_position_map[cam_idx]}_pinhole.json"
 
     try:
         with open(file_path, 'r') as f:
